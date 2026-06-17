@@ -1,35 +1,50 @@
-// FrogEnsemble.pde (Processing側：キーボード入力テストおよびBPM可視化)
+// FrogEnsemble.pde (外部ライブラリ不要・Java標準UDP同期機能のみ搭載モデル)
 
 import ddf.minim.*;
 import ddf.minim.ugens.*;
 import processing.serial.*;
 
+// Java標準のネットワーク機能
+import java.net.DatagramPacket;
+import java.net.DatagramSocket;
+import java.net.InetAddress;
+
 Minim minim;
 AudioOutput out;
 
+// Java標準のUDP受信ソケットとスレッド制御
+DatagramSocket socket;
+Thread udpThread;
+
+// 5重サイン波加算合成用（トランペット用）
 Oscil tOsc1, tOsc2, tOsc3, tOsc4, tOsc5;
+// 3重倍音合成用（オルガン用）
 Oscil oOsc1, oOsc2, oOsc3;
 
 Serial myPort; 
 float serialFreq = 0.0f;
 float serialTrumpetAmp = 0.0f;
 float serialOrganAmp = 0.0f;
-int serialBpm = 90; // Arduinoから受け取る現在のBPM
+int serialBpm = 90; 
 
 boolean isPlaying = false;
+boolean isRunning = true; // UDPループ制御用
 
 void setup() {
   size(500, 320); 
-  pixelDensity(1); 
+  pixelDensity(1); // 高解像度画面の座標ズレを修正します
   
+  // シリアル通信初期化
   printArray(Serial.list());
   String portName = Serial.list()[2]; // 環境に合わせてインデックスを変更してください
   myPort = new Serial(this, portName, 115200);
   myPort.bufferUntil('\n'); 
   
+  // 音響合成（Minim）初期化
   minim = new Minim(this);
   out = minim.getLineOut(Minim.STEREO, 1024);
   
+  // オシレータの初期設定とパッチ接続
   tOsc1 = new Oscil(0, 0f, Waves.SINE); tOsc1.patch(out);
   tOsc2 = new Oscil(0, 0f, Waves.SINE); tOsc2.patch(out);
   tOsc3 = new Oscil(0, 0f, Waves.SINE); tOsc3.patch(out);
@@ -39,6 +54,31 @@ void setup() {
   oOsc1 = new Oscil(0, 0f, Waves.SINE); oOsc1.patch(out);
   oOsc2 = new Oscil(0, 0f, Waves.SINE); oOsc2.patch(out);
   oOsc3 = new Oscil(0, 0f, Waves.SINE); oOsc3.patch(out);
+
+  // Java標準機能によるUDPポート「9001」の監視スレッド起動
+  try {
+    socket = new DatagramSocket(9001);
+    udpThread = new Thread(new Runnable() {
+      public void run() {
+        byte[] buffer = new byte[1024];
+        while (isRunning) {
+          try {
+            DatagramPacket packet = new DatagramPacket(buffer, buffer.length);
+            socket.receive(packet); // 親機からのUDPデータを待機（ブロッキング）
+            
+            String message = new String(packet.getData(), 0, packet.getLength());
+            parseUdpMessage(message); // 受信文字列を解析
+          } catch (Exception e) {
+            // ソケットクローズ時の例外などは無視
+          }
+        }
+      }
+    });
+    udpThread.start();
+    println("● UDPポート 9001 で親機からの同期信号待機を開始しました。");
+  } catch (Exception e) {
+    println("❌ UDPソケットの初期化に失敗しました: " + e.getMessage());
+  }
 }
 
 void draw() {
@@ -46,6 +86,7 @@ void draw() {
   fill(255);
   textSize(16);
   
+  // 各オシレータへの周波数適用
   if (serialFreq > 0) {
     tOsc1.setFrequency(serialFreq * 1.0f);
     tOsc2.setFrequency(serialFreq * 2.0f);
@@ -58,6 +99,7 @@ void draw() {
     oOsc3.setFrequency(serialFreq * 2.0f);
   }
   
+  // 各オシレータへの振幅（音量）エンベロープ適用
   tOsc1.setAmplitude(serialTrumpetAmp * 0.40f);
   tOsc2.setAmplitude(serialTrumpetAmp * 0.25f);
   tOsc3.setAmplitude(serialTrumpetAmp * 0.15f);
@@ -68,24 +110,23 @@ void draw() {
   oOsc2.setAmplitude(serialOrganAmp * 0.70f);
   oOsc3.setAmplitude(serialOrganAmp * 0.40f);
 
-  // テキスト情報の描画
+  // 画面上のUI状態テキスト
   if (!isPlaying) {
-    text("Status: Waiting...", 20, 35);
-    text("Action: Click screen to START", 20, 65);
+    text("Status: Sync Waiting...", 20, 35);
+    text("Action: Waiting for Parent 'START' via UDP", 20, 65);
   } else {
-    text("Status: Playing (Tempo Control Enabled)", 20, 35);
+    text("Status: Playing (Tempo Synchronized)", 20, 35);
     text("Current Freq: " + serialFreq + " Hz", 20, 65);
   }
   
-  // 現在のBPMを画面右上に強調表示
   fill(0, 255, 255);
   text("BPM: " + serialBpm, 380, 35);
   
   textSize(12);
-  fill(180);
-  text("Test Key: [1]=BPM 70(Slow)  [2]=BPM 90(Mid)  [3]=BPM 110(Fast)", 20, 95);
+  fill(150);
+  text("Network: Wi-Fi[H1-SyncAP]  Port[UDP 9001]", 20, 95);
   
-  // リアルタイム波形表示
+  // リアルタイム波形描画
   stroke(0, 255, 0); 
   strokeWeight(2);
   for (int i = 0; i < out.bufferSize() - 1; i++) {
@@ -97,24 +138,54 @@ void draw() {
   }
 }
 
-void mousePressed() {
-  myPort.write('S');
-  isPlaying = true;
-}
-
-// ★テスト用：キーボード入力を検知し，同期側を模した信号をArduinoへ転送
-void keyPressed() {
-  if (key == '1' || key == '2' || key == '3') {
-    myPort.write(key); // キー情報をそのままArduinoに送りつける
+// 届いたUDPパケットの内容に応じて処理を分岐
+void parseUdpMessage(String message) {
+  message = trim(message);
+  
+  // 1. 親機から "START" コマンドを受信
+  if (message.equals("START")) {
+    if (!isPlaying) {
+      myPort.write('S'); // Arduinoへ演奏開始信号を送信
+      isPlaying = true;
+      println("▶ [UDP] STARTを受信。演奏を開始します。");
+    }
+  }
+  
+  // 2. 親機から テンポ変更コマンド "LEVEL:x" を受信
+  else if (message.startsWith("LEVEL:")) {
+    String[] parts = split(message, ':');
+    if (parts.length == 2) {
+      int level = int(parts[1]);
+      if (level == 1) myPort.write('1'); // テンポ遅め (BPM 70)
+      if (level == 2) myPort.write('2'); // テンポ普通 (BPM 90)
+      if (level == 3) myPort.write('3'); // テンポ早め (BPM 110)
+      println("⏱ [UDP] LEVEL:" + level + " を受信。テンポを同期しました。");
+    }
   }
 }
 
+// PC単体での動作確認用（画面クリックでも開始可能）
+void mousePressed() {
+  if (!isPlaying) {
+    myPort.write('S');
+    isPlaying = true;
+  }
+}
+
+// Arduinoからのリアルタイム楽譜データ受信
 void serialEvent(Serial p) {
   String inString = p.readStringUntil('\n');
   if (inString != null) {
     inString = trim(inString);
+    
+    // 曲が最後まで終わった場合
+    if (inString.startsWith("END")) {
+      isPlaying = false;
+      println("● 曲が正常に終了し、待機状態に戻りました。");
+      return;
+    }
+    
     String[] list = split(inString, ',');
-    // データが正しく4つ（周波数、トランペット音量、オルガン音量、BPM）届いているか確認
     if (list.length == 4) {
       serialFreq = float(list[0]);
       serialTrumpetAmp = float(list[1]);
@@ -124,7 +195,12 @@ void serialEvent(Serial p) {
   }
 }
 
+// 終了時のソケット・オーディオクローズ処理
 void stop() {
+  isRunning = false;
+  if (socket != null) {
+    socket.close();
+  }
   out.close();
   minim.stop();
   super.stop();
