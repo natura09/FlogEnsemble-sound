@@ -88,20 +88,22 @@ void loop() {
       organStop();
     }
     
-    // 次の音符の発音判定
-    if (millis() > nextNoteTime) {
-      playNextNote();
+    // ★重要: もし再生フラグが上の playNextNote() 内で false になったら、
+    // 即座に演奏終了パケット "END" を送信する
+    if (!isPlaying) {
+      Serial.println("END,0.0,0.0,0"); 
+    } else {
+      // 通常時のパケット送信
+      Serial.print(currentIndex > 0 ? melody[currentIndex - 1] : 0.0);
+      Serial.print(",");
+      Serial.print(getTrumpetAmp(), 4);
+      Serial.print(",");
+      Serial.print(getOrganAmp(), 4);
+      Serial.print(",");
+      Serial.println(bpm);
     }
-
-    // Processing側へ、現在の「周波数」「トランペット音量」「オルガン音量」「現在のBPM」を送信
-    Serial.print(currentIndex > 0 ? melody[currentIndex - 1] : 0.0);
-    Serial.print(",");
-    Serial.print(getTrumpetAmp(), 4);
-    Serial.print(",");
-    Serial.print(getOrganAmp(), 4);
-    Serial.print(",");
-    Serial.println(bpm); // 現在のBPM状態もフィードバック
   } else {
+    // 待機中
     Serial.print("0.0,0.0,0.0,");
     Serial.println(bpm);
   }
@@ -144,9 +146,10 @@ void playNextNote() {
   stopNoteTime = noteStartMillis + (unsigned long)(currentNoteDurationMs * 0.85f);
   
   if (currentFreq > 0) {
-    // 🎹 現在はオルガンでテスト中（必要に応じて入れ替える）
-    trumpetStop();
-    organPlay(currentFreq);
+    // 🎺 トランペットの音を鳴らす（周波数を渡す）
+    trumpetPlay(currentFreq); 
+    // 🎹 オルガンの音は止める（何も渡さない）
+    organStop();
   } else {
     trumpetStop();
     organStop();
